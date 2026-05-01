@@ -1,94 +1,158 @@
 # RSAT-FOD-Offline-Install
-Enterprise solution to install RSAT Offline without needing access to windows update
 
+Offline RSAT installation for Windows 11 using the Features on Demand ISO.
 
-Like many companies, we were struggling to deploy RSAT tools on Windows 11. We had it working fine, modifying two registry entries and running the standard script to reach out to Windows Update for the packages, provided separately in case this works in your environment.
+This repository contains scripts and guidance for extracting the offline RSAT payload from the Windows 11 Optional Features ISO and installing the RSAT capabilities without relying on Windows Update or WSUS.
 
-It stopped working a couple months ago because of changes to the way our users authenticate against the firewall for external traffic. Rather than spending a lot of time on that angle for this relatively unique deployment, I elected to work towards offline availability via the features on demand ISO.
+---
 
-There are many pages that discuss how this can be done, however all that I could find are geared towards extracting the features and injecting them into a wim, which was not our usage and not what I wanted to do. Some refer to DISM, some refer to Get-WindowsCapability and Add-WindowsCapabilty; which really are effectively the same thing.
+## Overview
 
-I worked it out, and in the absence of other reference material online, decided to share with you what I did to make it work. For reference, we use SCCM/MECM 2309 and Windows 11 22H3 as of today. All these instructions assume that you are running en-US language and amd64 versions, just modify as necessary.  I’ve provided scripts that do all the heavy lifting.
+This approach is useful when your environment cannot reach Windows Update or when firewall/authentication changes break online RSAT installs.
 
-Steps presented below:
-1.	Download Optional Features ISO and extract contents.
-2.	Filter contents to needed files and export list of RSAT apps
-3.	Install RSAT tools offline via powershell
-4.	(Optional) Deploy via SCCM/Intune
-5.	Troubleshooting
+Key benefits:
+- Install RSAT offline using local source files
+- Avoid dependency on Windows Update / WSUS during install
+- Filter the ISO payload to only RSAT packages
+- Support deployment via SCCM/MECM/Intune or manual execution
 
+---
 
-Download Optional Features ISO and Extract Contents.
+## Repository Files
 
-First, we need to obtain the “Language and Optional Features for Windows 11, version 22H2” iso, note that the version will change but the steps should stay the same. To get this, visit my.visualstudio.com, click “downloads”, click “windows 11”, and scroll down—or just search. Download the iso. It winds up around 7 gigs, eww. I believe you can also get it from VLSC, but that’s not where I got it.
+- `RSAT Smart Cab Extract.ps1` - filters and extracts the RSAT-related CAB files from the Optional Features ISO.
+- `Windows 11 RSAT FOD Offline Install.ps1` - installs RSAT features offline using the extracted cab source.
 
-Many online instructions will tell you to mount this iso---which you certainly can, I personally prefer to extract with 7-zip or similar app. You’ll wind up with 2 folders, “LanguageAndOptionalFeatures” and “Windows Preinstallation Environment”. Obviously, you need the former.
+---
 
+## What you need
 
-Filter contents to needed files and export list of RSAT Apps
-Inside this folder are all the cab files for all FOD package, plus a few index cabs, as well as a metadata subfolder. As of my doing this project, it’s 3,216 files.
+- Windows 11 Features on Demand ISO ("Language and Optional Features")
+- `amd64` and `en-US` media for your target machines
+- PowerShell elevated as Administrator
+- Local or network location containing the extracted source files
 
-In my initial testing I used powershell get-childitem to filter out just the amd64 en-US language cab files and copy them to a new extract folder however this missed the base installer cabs as well as a few utility cabs that must be present for the installs to work, such as “FoDMetadata_Client.cab", and  "Downlevel-NLS-Sorting-Versions-Server-FoD-Package~31bf3856ad364e35~amd64~~.cab" . 
+---
 
+## Step 1: Download and extract the ISO
 
-Additionally, this brought over a LOT of cab files for NON-RSAT applications. These may be useful to you, but this document does not cover the installation of those features, and the cleanup is super messy if you’re trying to avoid storing unnecessary files, so I made a more elegant search and find routine to select only the RSAT-related cab files. You can see that in the included script at the bottom.
-Additionally, we need files from the “metadata” subfolder. You need en-US files, as well everything not-language specific, and they need to wind up in a “metadata” folder beneath your cabs. For example, c:\temp\extract\metadata
+Download the Windows 11 Optional Features ISO from [my.visualstudio.com](https://my.visualstudio.com) or from your Visual Studio/MSDN downloads portal. Search for the "Language and Optional Features for Windows 11" ISO.
 
+Once downloaded, extract the `LanguageAndOptionalFeatures` folder content. You can either mount the ISO or use 7-Zip.
 
-If you’re doing this manually, you’ll want to confirm that it sees all the right apps, like so:
-Get-WindowsCapability -Name RSAT* -Online -Source "C:\temp\extract" | Select-Object -Property Name 
+You should end up with two folders:
+- `LanguageAndOptionalFeatures`
+- `Windows Preinstallation Environment`
 
+Only the `LanguageAndOptionalFeatures` folder is needed for RSAT.
 
-From here, delete the cab entries that don’t match your list if you ONLY want RSAT. Be sure to preserve the Downlevel and FoDMetadata cabs.
+---
 
+## Step 2: Filter the CAB files for RSAT
 
-Because I’m a nice guy, here are the RSAT apps:
-Rsat.ActiveDirectory.DS-LDS.Tools~~~~0.0.1.0
-Rsat.AzureStack.HCI.Management.Tools~~~~0.0.1.0
-Rsat.BitLocker.Recovery.Tools~~~~0.0.1.0
-Rsat.CertificateServices.Tools~~~~0.0.1.0
-Rsat.DHCP.Tools~~~~0.0.1.0
-Rsat.Dns.Tools~~~~0.0.1.0
-Rsat.FailoverCluster.Management.Tools~~~~0.0.1.0
-Rsat.FileServices.Tools~~~~0.0.1.0
-Rsat.GroupPolicy.Management.Tools~~~~0.0.1.0
-Rsat.IPAM.Client.Tools~~~~0.0.1.0
-Rsat.LLDP.Tools~~~~0.0.1.0
-Rsat.NetworkController.Tools~~~~0.0.1.0
-Rsat.NetworkLoadBalancing.Tools~~~~0.0.1.0
-Rsat.RemoteAccess.Management.Tools~~~~0.0.1.0
-Rsat.RemoteDesktop.Services.Tools~~~~0.0.1.0
-Rsat.ServerManager.Tools~~~~0.0.1.0
-Rsat.StorageMigrationService.Management.Tools~~~~0.0.1.0
-Rsat.StorageReplica.Tools~~~~0.0.1.0
-Rsat.SystemInsights.Management.Tools~~~~0.0.1.0
-Rsat.VolumeActivation.Tools~~~~0.0.1.0
-Rsat.WSUS.Tools~~~~0.0.1.0
+The folder contains thousands of CAB files plus metadata files. A simple filter of only `amd64` and `en-US` language CABs is not enough because the install also needs base and utility CABs such as:
 
-Great, we’re most of the way there. Once you’ve narrowed down the apps to only the ones you want (plus the downlevel and FoDMetadata cabs!), put them in a repository somewhere---your SCCM server, a network share, a manual copy to a pc you want to install apps on, whatever.
+- `FoDMetadata_Client.cab`
+- `Downlevel-NLS-Sorting-Versions-Server-FoD-Package~31bf3856ad364e35~amd64~~.cab`
 
-Install RSAT tools offline via powershell
+Use `RSAT Smart Cab Extract.ps1` to extract only the RSAT-relevant CABs and the required metadata.
 
-For reasons I do not understand, the Add-WindowsCapability cmdlet, even when supplied with the -Source parameter, will STILL try to dial out to Windows Update or your local WSUS server or whatever you have defined in GPO. There’s another parameter, “-LimitAccess” that you must also use to limit it to your source directory. This parameter is missing from most of the script examples you can find online, including ones presented by Microsoft. You must also use Get-WindowsCapability first and then pipe those results to Add-WindowsCapability. 
+Create a layout like:
 
-If you just need this bit, reference “Windows 11 RSAT FOD Install.ps1”. If you want to install something specific, like only ADUC, change the filter like this:
-$RSAT_FoD = Get-WindowsCapability –Online | Where-Object Name -like 'RSAT.ActiveDirectory*'
-(Or whatever RSAT app(s) you want from above)
+```
+C:\temp\extract\
+  ├── *.cab
+  └── metadata\
+      └── *.cab
+```
 
-(Optional) Deploy via SCCM/Intune
+---
 
-I personally prefer to use PSADT for as many deployments as possible, the script below “Windows 11 RSAT FOD Install.ps1” has comments to help you integrate it smoothly into PSADT. For detection method, mine just checks for several of the RSAT exe’s or msc’s, for example:
-![image](https://github.com/user-attachments/assets/615c773a-13c2-4bf8-b55a-1b227e6a5da3)
+## Step 3: Verify the source and available RSAT packages
 
- 
+Confirm that your source path contains the expected RSAT packages:
 
-Other files include dsac.exe, bitlockerdeviceencryption.exe, dnsmgmt.msc, dhcpmgmt.mst.
+```powershell
+Get-WindowsCapability -Name RSAT* -Online -Source "C:\temp\extract" | Select-Object -Property Name
+```
 
+If the source is valid, you should see the RSAT package names listed.
 
-Troubleshooting:
+---
 
-Access Denied errors:
-You forgot the -LimitAccess parameter on the Add-WindowsCapability. Oops.
+## RSAT package list
 
-Cannot Find Source Files error in Powershell:
-You’re missing one or more cabs (or xml.cab). If you can’t run it down or can’t be bothered, just include *all* the metadata files from the iso. There are a lot of them but it’s only 1.14 Mb.
+The packages this repo targets include:
+
+- `Rsat.ActiveDirectory.DS-LDS.Tools~~~~0.0.1.0`
+- `Rsat.AzureStack.HCI.Management.Tools~~~~0.0.1.0`
+- `Rsat.BitLocker.Recovery.Tools~~~~0.0.1.0`
+- `Rsat.CertificateServices.Tools~~~~0.0.1.0`
+- `Rsat.DHCP.Tools~~~~0.0.1.0`
+- `Rsat.Dns.Tools~~~~0.0.1.0`
+- `Rsat.FailoverCluster.Management.Tools~~~~0.0.1.0`
+- `Rsat.FileServices.Tools~~~~0.0.1.0`
+- `Rsat.GroupPolicy.Management.Tools~~~~0.0.1.0`
+- `Rsat.IPAM.Client.Tools~~~~0.0.1.0`
+- `Rsat.LLDP.Tools~~~~0.0.1.0`
+- `Rsat.NetworkController.Tools~~~~0.0.1.0`
+- `Rsat.NetworkLoadBalancing.Tools~~~~0.0.1.0`
+- `Rsat.RemoteAccess.Management.Tools~~~~0.0.1.0`
+- `Rsat.RemoteDesktop.Services.Tools~~~~0.0.1.0`
+- `Rsat.ServerManager.Tools~~~~0.0.1.0`
+- `Rsat.StorageMigrationService.Management.Tools~~~~0.0.1.0`
+- `Rsat.StorageReplica.Tools~~~~0.0.1.0`
+- `Rsat.SystemInsights.Management.Tools~~~~0.0.1.0`
+- `Rsat.VolumeActivation.Tools~~~~0.0.1.0`
+- `Rsat.WSUS.Tools~~~~0.0.1.0`
+
+> Keep `Downlevel` and `FoDMetadata` CABs as part of the source set.
+
+---
+
+## Step 4: Install RSAT offline
+
+Run the installer script from an elevated PowerShell session:
+
+```powershell
+.\Windows 11 RSAT FOD Offline Install.ps1 -Source "C:\temp\extract"
+```
+
+In the installer script, make sure `Add-WindowsCapability` is invoked with `-LimitAccess` so the install is limited to the local source.
+
+---
+
+## Step 5: Optional deployment via SCCM / Intune
+
+This repository works well with deployment frameworks such as MECM. Use detection logic based on installed RSAT tools, for example:
+
+- `dsac.exe`
+- `dnsmgmt.msc`
+- `bitlockerdeviceencryption.exe`
+- `dhcpmgmt.msc`
+
+The install script includes comments that make it easy to integrate with SCCM or Intune.
+
+---
+
+## Troubleshooting
+
+### Access Denied errors
+
+If the install fails with `Access Denied`, verify that the command includes `-LimitAccess` when calling `Add-WindowsCapability`.
+
+### Cannot Find Source Files error
+
+If PowerShell reports missing source files, one or more CABs or metadata files are missing from your source path. If needed, include all metadata files from the ISO folder.
+
+---
+
+## Notes
+
+- This guidance was created using Windows 11 22H3 and SCCM/MECM 2309.
+- Adjust language and architecture settings as needed for non-`en-US` or non-`amd64` environments.
+- If you only need a subset of RSAT capabilities, filter the package list before installation:
+
+```powershell
+$RSAT_FoD = Get-WindowsCapability -Online | Where-Object Name -like 'RSAT.ActiveDirectory*'
+```

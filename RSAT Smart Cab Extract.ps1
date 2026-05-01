@@ -1,76 +1,183 @@
 <#
-This script is provided without warranties, guarantees, referees, or Applebee's. Don't run code you haven't investigated. You will need to be an admin to do these things, almost certainly. This script will overwrite the contents of the defined folders. Comment out Step 9 if you don't want to check back and make sure you got all the apps.
+.SYNOPSIS
+    Short Summary
 
-When complete it will spit out a list of available apps to $destinationFolder\rsatapps.txt
+.DESCRIPTION
+    Longer more detailed description
+
+.PARAMETER FoDIsoFolder
+    The folder containing the FOD ISO file.
+
+.PARAMETER DestinationFolder
+    The destination folder where the extracted CAB files will be copied to.
+
+.EXAMPLE
+    .\RSAT-Smart-Cab-Extract.ps1 -FoDIsoFolder "C:\temp\iso" -DestinationFolder "C:\temp\rsat_cabs"
+    This example extracts the RSAT CAB files from the specified source folder and copies them to the specified destination folder.
+
+.NOTES
+    Created By        : Name
+    Creation Date     : DD/MM/YYYY
+    Last Updated By   : Name
+    Last Updated      : DD/MM/YYYY
+    Script Version    : 1.0.0
+    Template Version  : 3.0.0
+
+    This script is provided without warranties, guarantees, referees, or Applebee's. Don't run code you haven't investigated. You will need to be an admin to do these things, almost certainly. This script will overwrite the contents of the defined folders. Comment out Step 9 if you don't want to check back and make sure you got all the apps.
+
+    When complete it will spit out a list of available apps to $DestinationFolder\rsatapps.txt
+
+.LINK
+    GitHub Repository : https://github.com/Gen2Training/PowerShell-Template
+    Documentation     : https://github.com/Gen2Training/PowerShell-Template/blob/main/README.md
+    Change Log        : https://github.com/Gen2Training/PowerShell-Template/blob/main/CHANGELOG.MD
 #>
 
-# Step 1: Define your source and destination folders. I highly suggest doing this locally in testing and not to a network share.
-$sourceFolder = "C:\SCCMApps\RSAT Offline\mul_windows_11_languages_and_optional_features_x64_dvd_dbe9044b\LanguagesAndOptionalFeatures"  # Replace with actual path to your CAB files
-$destinationFolder = "C:\SCCMApps\smartcabtest"  # Destination for RSAT-related CAB files
+#-----[ Requirements ]-----#
 
+#Requires -RunAsAdministrator
 
-# Step 2: Get RSAT Capability names. Don't edit this, this is getting the current "master list" from Microsoft. If you can't reach out to the internet AT ALL, edit the variable to look like this: $rsatCapabilities = Get-WindowsCapability -Name RSAT* -Online -Source $SourceFolder | Select-Object -ExpandProperty Name
+#-----[ Script Parameters ]-----#
 
-$rsatCapabilities = Get-WindowsCapability -Name RSAT* -Online | Select-Object -ExpandProperty Name
+[CmdletBinding()]
+param (
+    [Parameter(Mandatory = $true, HelpMessage = "The folder containing the FOD ISO.")]
+    [ValidateNotNullOrEmpty()]
+    [string] $FODIsoFolder,
 
+    [Parameter(Mandatory = $false, HelpMessage = "The destination folder where the extracted CAB files will be copied to.")]
+    [ValidateNotNullOrEmpty()]
+    [string] $DestinationFolder = "$FODIsoFolder\Extracted",
 
-###No need to edit past here####
+    [Parameter(Mandatory = $false, HelpMessage = "Install features as well as extract.")]
+    [switch]
+    $Install
+)
 
-# Ensure the destination folder exists
-New-Item -ItemType Directory -Path $destinationFolder -Force
+#-----[ Execution ]-----#
 
-# Step 3: Process the RSAT capability names to match against the CAB files
-foreach ($capability in $rsatCapabilities) {
-    # Example: Rsat.ActiveDirectory.DS-LDS.Tools~~~~0.0.1.0
-    # Split on `.` and take the main part of the feature name, e.g., 'ActiveDirectory'
-    $featureParts = $capability -split "\."
-    $featureName = $featureParts[1]  # Extract 'ActiveDirectory', 'DNS', 'DHCP', etc.
+Write-Host "Starting RSAT CAB file extraction from $FODIsoFolder to $DestinationFolder"
 
-    # Step 4: Find corresponding CAB files (base and en-US versions) in the folder
-    # Match both base and language-specific files (en-US)
-    $cabFiles = Get-ChildItem -Path $sourceFolder -Filter "*$featureName*" | 
-                Where-Object { $_.Name -like "*amd64~~.cab" -or $_.Name -like "*amd64~en-us~.cab" }
+Write-Verbose "Checking if source folder exists: $FODIsoFolder"
+if (-not (Test-Path -Path $FODIsoFolder -PathType Container)) {
+    Write-Error "Source folder does not exist: $FODIsoFolder"
+    exit 1
+}
 
-    # Step 5: Copy the matched CAB files to the destination
-    foreach ($cab in $cabFiles) {
-        $destinationPath = Join-Path -Path $destinationFolder -ChildPath $cab.Name
-        Copy-Item -Path $cab.FullName -Destination $destinationPath -Force
-        Write-Host "Copied: $($cab.Name)"
+$FODisos = Get-ChildItem -Path $FODIsoFolder -Filter "*.iso" -File -ErrorAction Stop
+switch ($FODisos.Count) {
+    0 {
+        throw "No ISO file found in the source folder: $FODIsoFolder. Please place the ISO file in the folder and try again."
+    }
+    1 {
+        try { 
+            $mountResult = Mount-DiskImage -ImagePath $FODisos.FullName -PassThru -ErrorAction Stop
+            $driveLetter = ($mountResult | Get-Volume).DriveLetter
+            
+            if ([string]::IsNullOrWhiteSpace($driveLetter)) {
+                Write-Error "Failed to retrieve drive letter from mounted ISO"
+                exit 1
+            }
+            
+            $source = "$($driveLetter):\LanguagesAndOptionalFeatures"
+            Write-Verbose "Mounted ISO at drive letter: $driveLetter`:\LanguagesAndOptionalFeatures"
+            
+            if (-not (Test-Path -Path $source -PathType Container)) {
+                Write-Error "Expected ISO folder not found at: $source"
+                exit 1
+            }
+        } catch {
+            Write-Error "Failed to mount ISO: $_"
+            exit 1
+        }
+    }
+    default {
+        throw "Multiple ISO files found in the source folder: $FODIsoFolder. Please leave only one ISO."
     }
 }
-###You're a cheeky bugger, aren't you?#####
-# Step 6: Manually copy specific files
+
+if (-not (Test-Path -Path $DestinationFolder -PathType Container)) {
+    Write-Verbose "Creating destination folder: $DestinationFolder"
+    try {
+        New-Item -ItemType Directory -Path $DestinationFolder -Force | Out-Null
+    } catch {
+        Write-Error "Failed to create destination folder: $_"
+        exit 1
+    }
+}
+
+Write-Verbose "Retrieving list of RSAT capabilities from the system"
+$rsatCapabilities = Get-WindowsCapability -Name RSAT* -Online | Select-Object -ExpandProperty Name
+
+foreach ($capability in $rsatCapabilities) {
+    Write-Verbose "Processing capability: $capability"
+    $featureParts = $capability -split "\."
+
+    Write-Verbose "Looking for CAB files matching: *$($featureParts[1])* in $source"
+    $cabFiles = Get-ChildItem -Path $source -Filter "*$($featureParts[1])*" | 
+                Where-Object { $_.Name -like "*amd64~~.cab" -or $_.Name -like "*amd64~en-us~.cab" }
+
+    Write-Verbose "Copying CAB files for capability: $capability to $DestinationFolder"
+    foreach ($cab in $cabFiles) {
+        $destinationPath = Join-Path -Path $DestinationFolder -ChildPath $cab.Name
+        Copy-Item -Path $cab.FullName -Destination $destinationPath -Force
+        Write-Verbose "Copied: $($cab.Name)"
+    }
+}
+
 $additionalFiles = @(
     "FoDMetadata_Client.cab",
     "Downlevel-NLS-Sorting-Versions-Server-FoD-Package~31bf3856ad364e35~amd64~~.cab"
 )
 
 foreach ($file in $additionalFiles) {
-    $filePath = Join-Path -Path $sourceFolder -ChildPath $file
+    Write-Verbose "Looking for additional file: $file in $source"
+    $filePath = Join-Path -Path $source -ChildPath $file
     if (Test-Path -Path $filePath) {
-        Copy-Item -Path $filePath -Destination $destinationFolder
-        Write-Host "Copied: $(file)"
+        Write-Verbose "Copying additional file: $file to $DestinationFolder"
+        Copy-Item -Path $filePath -Destination $DestinationFolder
+        Write-Verbose "Copied: $file"
     } else {
-        Write-Host "File $file not found in $sourceFolder"
+        Write-Error "File $file not found in $source"
     }
 }
 
-$metadataSourcePath = Join-Path -Path $sourceFolder -ChildPath "metadata"  # Source \metadata folder
-$metadataDestinationPath = Join-Path -Path $destinationFolder -ChildPath "metadata"  # Destination \metadata folder
+$metadataSourcePath = Join-Path -Path $source -ChildPath "metadata"  # Source \metadata folder
+$metadataDestinationPath = Join-Path -Path $DestinationFolder -ChildPath "metadata"  # Destination \metadata folder
 
-# Step 7: Ensure the \metadata destination directory exists
-New-Item -ItemType Directory -Path $metadataDestinationPath -Force
+try {
+    Write-Verbose "Creating metadata destination folder: $metadataDestinationPath"
+    New-Item -ItemType Directory -Path $metadataDestinationPath -Force | Out-Null
+} catch {
+    Write-Error "Failed to create metadata destination folder: $_"
+    exit 1
+}
 
-# Step 8: Copy items from the \metadata subfolder matching the second filter
 Get-ChildItem -Path $metadataSourcePath -Recurse | 
     Where-Object { $_.Name -like "*en-US*" -or $_.Name -like "DesktopTargetCompDB_*" } |
     Copy-Item -Destination $metadataDestinationPath
 
-
-#Step 9: Check Available RSAT apps
-Get-WindowsCapability -Name RSAT* -Online -Source "$destinationFolder" |
+Get-WindowsCapability -Name RSAT* -Online -Source "$DestinationFolder" |
     Select-Object -ExpandProperty Name |
-    Out-File -FilePath "$destinationFolder\rsatapps.txt" -Encoding ASCII
+    Out-File -FilePath "$DestinationFolder\rsatapps.txt" -Encoding ASCII
 
+try {
+    Write-Host "Dismounting ISO from drive letter: $driveLetter"
+    Dismount-DiskImage -ImagePath $FODisos.FullName -ErrorAction Stop
+    Write-Verbose "Successfully dismounted ISO."
+} catch {
+    Write-Error "Failed to dismount ISO: $_"
+} 
 
-Write-Host "RSAT CAB file extraction completed!"
+Write-Host "RSAT CAB file extraction completed!" -ForegroundColor Green
+
+if ($Install) {
+    Write-Host "Starting installation of RSAT features from extracted CAB files..." -ForegroundColor Green
+    $RSATFod = Get-WindowsCapability -Name RSAT.* -Online -Source $DestinationFolder
+
+    foreach ($Item in $RSATFod)
+    {
+        Write-Host "Installing $($Item.Name) from $DestinationFolder" -ForegroundColor Cyan
+        Add-WindowsCapability -Online -Name $Item.name -Source $DestinationFolder -LimitAccess
+    }
+}
