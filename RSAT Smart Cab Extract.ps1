@@ -5,6 +5,8 @@
 .DESCRIPTION
     Longer more detailed description
 
+    https://learn.microsoft.com/en-us/azure/virtual-desktop/windows-11-language-packs
+
 .PARAMETER FoDIsoFolder
     The folder containing the FOD ISO file.
 
