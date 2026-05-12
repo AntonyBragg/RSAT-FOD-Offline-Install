@@ -51,7 +51,11 @@ param (
 
     [Parameter(Mandatory = $false, HelpMessage = "Install features as well as extract.")]
     [switch]
-    $Install
+    $Install,
+
+    [Parameter(Mandatory = $false, HelpMessage = "Extract only common features.")]
+    [switch]
+    $CommonFeaturesOnly
 )
 
 #-----[ Execution ]-----#
@@ -107,7 +111,8 @@ if (-not (Test-Path -Path $DestinationFolder -PathType Container)) {
 }
 
 Write-Verbose "Retrieving list of RSAT capabilities from the system"
-$rsatCapabilities = Get-WindowsCapability -Name RSAT* -Online | Select-Object -ExpandProperty Name
+$rsatCapabilities = Get-WindowsCapability -Name RSAT* -Online | Select-Object -ExpandProperty Name |
+    Where-Object { $_.State -eq "NotPresent" }
 
 foreach ($capability in $rsatCapabilities) {
     Write-Verbose "Processing capability: $capability"
@@ -163,7 +168,7 @@ Get-WindowsCapability -Name RSAT* -Online -Source "$DestinationFolder" |
 
 try {
     Write-Host "Dismounting ISO from drive letter: $driveLetter"
-    Dismount-DiskImage -ImagePath $FODisos.FullName -ErrorAction Stop
+    Dismount-DiskImage -ImagePath $FODisos.FullName -ErrorAction Stop | out-null
     Write-Verbose "Successfully dismounted ISO."
 } catch {
     Write-Error "Failed to dismount ISO: $_"
@@ -175,9 +180,17 @@ if ($Install) {
     Write-Host "Starting installation of RSAT features from extracted CAB files..." -ForegroundColor Green
     $RSATFod = Get-WindowsCapability -Name RSAT.* -Online -Source $DestinationFolder
 
-    foreach ($Item in $RSATFod)
-    {
-        Write-Host "Installing $($Item.Name) from $DestinationFolder" -ForegroundColor Cyan
-        Add-WindowsCapability -Online -Name $Item.name -Source $DestinationFolder -LimitAccess
+    foreach ($Item in $RSATFod) {
+        Write-Host "Installing: $($Item.Name)" -ForegroundColor Cyan
+
+        & dism.exe /Online /Add-Capability "/CapabilityName:$($Item.Name)" "/Source:$DestinationFolder" /LimitAccess
+
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "DISM failed for '$($Item.Name)' with exit code $LASTEXITCODE"
+        } else {
+            Write-Host "Successfully installed '$($Item.Name)'" -ForegroundColor Green
+        }
     }
+
+    Write-Host "RSAT feature installation completed!" -ForegroundColor Green
 }
